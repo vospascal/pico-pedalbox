@@ -1,5 +1,6 @@
 import json
 import os
+from gpio_utils import GPIO_MAP, check_pinout  # Import the GPIO utilities
 
 class Storage:
     def __init__(self, settings_file="settings.json", default_file="default.json"):
@@ -80,20 +81,47 @@ class Storage:
 
     def read_from_settings(self, key=None):
         """
-        Read data from the settings file (cache) or from the file itself if key is not cached.
-        :param key: The key to look up in the settings file. If None, return all data.
+        Read data from the settings file (cache). Supports nested keys.
+        :param key: The key to look up, supports nested keys separated by a dot (e.g., "clutch.bits").
         :return: The value associated with the key, or all data if no key is provided.
         """
-        return self._cache.get(key) if key else self._cache
+        if not key:
+            return self._cache
+
+        keys = key.split(".")
+        current = self._cache
+
+        for k in keys:
+            if isinstance(current, dict) and k in current:
+                current = current[k]
+            else:
+                return None  # Key not found
+
+        return current
+
 
     def write_to_settings(self, key, value):
         """
-        Write a key-value pair to the settings file and update the cache.
-        :param key: The key to update in the settings file.
+        Write a value to a specific key or nested key in the settings file and update the cache.
+        :param key: The key to update, supports nested keys separated by a dot (e.g., "clutch.bits").
         :param value: The value to associate with the key.
         """
-        self._cache[key] = value  # Update the cache
-        self.write_to_file(self.settings_file, key, value)
+        # Split the key for nested updates
+        keys = key.split(".")
+        
+        # Start with the cached settings
+        current = self._cache
+        
+        # Traverse to the correct dictionary level
+        for k in keys[:-1]:
+            current = current.setdefault(k, {})  # Create nested dictionaries as needed
+        
+        # Update the value at the final key
+        current[keys[-1]] = value
+
+        # Write the updated settings back to the file
+        self.write_to_file(self.settings_file, None, self._cache)  # Write the entire cache
+
 
     def read_from_defaults(self, key=None):
         """
@@ -102,3 +130,15 @@ class Storage:
         :return: The value associated with the key, or all data if no key is provided.
         """
         return self.read_from_file(self.default_file, key)
+
+    def validate_pinout(self):
+        """
+        Validate the pinout configuration using the GPIO map.
+        """
+
+        settings = self.read_from_settings()
+        if not settings:
+            print("Error: No settings found. Unable to validate pinout.")
+            return
+    
+        check_pinout(settings)

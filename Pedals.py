@@ -2,10 +2,12 @@ from UtilLibrary import UtilLib
 import microcontroller
 from Pedal import Pedal
 from adafruit_ads1x15.ads1115 import ADS1115
-from adafruit_hid.gamepad import Gamepad
+from simple import Gamepad
+from bit_utils import get_bit_depth
 import usb_cdc
 import board
 import busio
+from gpio_utils import check_pinout
 
 # Initialize I2C and Gamepad
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -14,29 +16,6 @@ utilLib = UtilLib()
 
 # Constants
 E_INIT = "init_flag"
-E_PEDAL_KEYS = {
-    "throttle": {
-        "output_map": "throttle_output_map",
-        "calibration": "throttle_calibration",
-        "bits": "throttle_bits",
-        "input": "throttle_input",
-        "on": "throttle_on",
-    },
-    "brake": {
-        "output_map": "brake_output_map",
-        "calibration": "brake_calibration",
-        "bits": "brake_bits",
-        "input": "brake_input",
-        "on": "brake_on",
-    },
-    "clutch": {
-        "output_map": "clutch_output_map",
-        "calibration": "clutch_calibration",
-        "bits": "clutch_bits",
-        "input": "clutch_input",
-        "on": "clutch_on",
-    },
-}
 E_PEDAL_INVERTED_MAP = "pedal_inverted_map"
 E_PEDAL_SMOOTH_MAP = "pedal_smooth_map"
 
@@ -48,7 +27,11 @@ _clutch = Pedal("C:", i2c, gamepad)
 
 class Pedals:
     def __init__(self):
-        self._pedals = {"throttle": _throttle, "brake": _brake, "clutch": _clutch}
+        self._pedals = {
+            "throttle": {"pedal": _throttle, "prefix": "T"},
+            "brake": {"pedal": _brake, "prefix": "B"},
+            "clutch": {"pedal": _clutch, "prefix": "C"},
+        }
         self._on_states = {"throttle": False, "brake": False, "clutch": False}
 
     def setup(self):
@@ -67,14 +50,12 @@ class Pedals:
         """
         Main loop to handle serial commands and update pedals.
         """
-        
         if usb_cdc.console.in_waiting > 0:
             try:
                 msg = usb_cdc.console.readline().decode("utf-8").strip()
                 self.process_serial_command(msg)
             except UnicodeDecodeError as e:
                 print(f"Error decoding serial data: {e}")
-
 
         serial_string = ""
         for name, pedal in self._pedals.items():
@@ -90,6 +71,8 @@ class Pedals:
         if usb_cdc.console.out_waiting == 0:
             usb_cdc.console.write(serial_string.encode("utf-8") + b"\n")
 
+
+    ### Serial Command Processing ###
     def process_serial_command(self, msg):
         """
         Process incoming serial commands.
@@ -97,8 +80,10 @@ class Pedals:
         if "clearEEPROM" in msg:
             self.clear_eeprom()
             usb_cdc.console.write(b"done\n")
+        if "RESET" in msg:
+            self.reset_device_settings()
 
-        self.reset_device()
+        # Handle specific commands
         self.handle_command(msg, "GetUsage", self.get_usage)
         self.handle_command(msg, "GetMap", self.get_map)
         self.handle_command(msg, "GetInverted", self.get_inverted)
@@ -106,65 +91,7 @@ class Pedals:
         self.handle_command(msg, "GetCali", self.get_calibration)
         self.handle_command(msg, "GetBits", self.get_bits)
 
-        for pedal_name, key in E_PEDAL_KEYS.items():
-            if f"{pedal_name.upper()}MAP:" in msg:
-                map_value = msg.replace(f"{pedal_name.upper()}MAP:", "")
-                self._pedals[pedal_name].set_output_map_values(map_value, key["output_map"])
-
-        if "CALIRESET" in msg:
-            for pedal_name, key in E_PEDAL_KEYS.items():
-                self._pedals[pedal_name].reset_calibration_values(key["calibration"])
-
-        if all(k in msg for k in ["CCALI:", "BCALI:", "TCALI:"]):
-            for pedal_name, prefix in {"throttle": "TCALI", "brake": "BCALI", "clutch": "CCALI"}.items():
-                cali_value = utilLib.get_value(msg, ",", 0).replace(f"{prefix}:", "")
-                self._pedals[pedal_name].set_calibration_values(cali_value, E_PEDAL_KEYS[pedal_name]["calibration"])
-
-
-    def reset_device(self, msg):
-        """
-        Reboot the device if the RESET command is received.
-        """
-        if "RESET" in msg:
-            print("Resetting device...")
-            self.reset_device_settings()
-
-    def load_settings(self):
-        """
-        Load all settings from storage. If the device has not been initialized, reset all settings to defaults.
-        """
-        initialized = utilLib.read_from_storage(E_INIT)
-
-        if initialized:
-            for name, key in E_PEDAL_KEYS.items():
-                pedal = self._pedals[name]
-                pedal.get_output_map_values("", key["output_map"])
-                pedal.get_eeprom_calibration_values(key["calibration"])
-
-            inverted_map = utilLib.read_from_storage(E_PEDAL_INVERTED_MAP) or "0-0-0"
-            self.update_inverted(f"INVER:{inverted_map}")
-
-            smooth_map = utilLib.read_from_storage(E_PEDAL_SMOOTH_MAP) or "1-1-1"
-            self.update_smooth(f"SMOOTH:{smooth_map}")
-        else:
-            self.reset_device_settings()
-            
-
-    def reset_device_settings(self):
-        """
-        Reset all pedal-related settings to defaults and reboot the device.
-        """
-        utilLib.write_to_storage(E_INIT, True)
-        for name, key in E_PEDAL_KEYS.items():
-            pedal = self._pedals[name]
-            pedal.reset_output_map_values(key["output_map"])
-            pedal.reset_calibration_values(key["calibration"])
-        utilLib.write_to_storage(E_PEDAL_INVERTED_MAP, "0-0-0")
-        utilLib.write_to_storage(E_PEDAL_SMOOTH_MAP, "1-1-1")
-
-        time.sleep(1)
-        microcontroller.reset()
-
+    # Helper methods for serial commands
     def handle_command(self, msg, command, handler):
         """
         Helper method to process serial commands.
@@ -176,108 +103,199 @@ class Pedals:
         """Clear all settings from storage."""
         utilLib.clear_storage()
 
-    # Helper methods for serial commands
     def get_usage(self, msg):
+        """
+        Send the usage status of all pedals via serial.
+        """
         if "GetUsage" in msg:
-            usage = f"USAGE:{self._throttle_on}-{self._brake_on}-{self._clutch_on}"
-            usb_cdc.console.write(usage.encode('utf-8') + b'\n')
+            usage = ",".join([f"{name}:{self.get_pedal_on(name)}" for name in self._pedals.keys()])
+            usb_cdc.console.write(f"USAGE:{usage}\n".encode("utf-8"))
+
 
     def get_map(self, msg):
+        """
+        Send the output map of all pedals via serial using their prefixes.
+        """
         if "GetMap" in msg:
-            map_values = (
-                _throttle.get_output_map_values("TMAP:") + "," +
-                _brake.get_output_map_values("BMAP:") + "," +
-                _clutch.get_output_map_values("CMAP:")
+            map_values = ",".join(
+                [
+                    f"{pedal['prefix']}MAP:{','.join(map(str, pedal['pedal'].get_output_map_values('', f'{name}_output_map')))}"
+                    for name, pedal in self._pedals.items()
+                ]
             )
-            usb_cdc.console.write(map_values.encode('utf-8') + b'\n')
+            usb_cdc.console.write(f"MAP:{map_values}\n".encode("utf-8"))
+
+
 
     def get_inverted(self, msg):
+        """
+        Send the inversion status of all pedals via serial in the format INVER:1-1-1.
+        """
         if "GetInverted" in msg:
-            inverted_values = (
-                f"INVER:{_throttle.get_inverted_values()}-{_brake.get_inverted_values()}-{_clutch.get_inverted_values()}"
+            inverted_values = "-".join(
+                [str(int(pedal["pedal"].get_inverted_values())) for pedal in self._pedals.values()]
             )
-            usb_cdc.console.write(inverted_values.encode('utf-8') + b'\n')
+            usb_cdc.console.write(f"INVER:{inverted_values}\n".encode("utf-8"))
 
     def get_smooth(self, msg):
+        """
+        Send the smoothing status of all pedals via serial in the format SMOOTH:1-1-1.
+        """
         if "GetSmooth" in msg:
-            smooth_values = (
-                f"SMOOTH:{_throttle.get_smooth_values()}-{_brake.get_smooth_values()}-{_clutch.get_smooth_values()}"
+            smooth_values = "-".join(
+                [str(int(pedal["pedal"].get_smooth_values())) for pedal in self._pedals.values()]
             )
-            usb_cdc.console.write(smooth_values.encode('utf-8') + b'\n')
+            usb_cdc.console.write(f"SMOOTH:{smooth_values}\n".encode("utf-8"))
+
 
     def get_calibration(self, msg):
+        """
+        Send the calibration values of all pedals via serial using their prefixes.
+        """
         if "GetCali" in msg:
-            calibration_values = (
-                _throttle.get_calibration_values("TCALI:") + "," +
-                _brake.get_calibration_values("BCALI:") + "," +
-                _clutch.get_calibration_values("CCALI:")
+            calibration_values = ",".join(
+                [
+                    f"{pedal['prefix']}CALI:{','.join(map(str, pedal['pedal'].get_calibration_values(f'{pedal['prefix']}CALI:')))}"
+                    for name, pedal in self._pedals.items()
+                ]
             )
-            usb_cdc.console.write(calibration_values.encode('utf-8') + b'\n')
-
-    def update_inverted(self, msg):
-        if "INVER:" in msg:
-            split_inverted = utilLib.get_value(msg, ',', 0).replace("INVER:", "")
-            _throttle.set_inverted_values(int(utilLib.get_value(split_inverted, '-', 0)))
-            _brake.set_inverted_values(int(utilLib.get_value(split_inverted, '-', 1)))
-            _clutch.set_inverted_values(int(utilLib.get_value(split_inverted, '-', 2)))
-
-    def update_smooth(self, msg):
-        if "SMOOTH:" in msg:
-            split_smooth = utilLib.get_value(msg, ',', 0).replace("SMOOTH:", "")
-            _throttle.set_smooth_values(int(utilLib.get_value(split_smooth, '-', 0)))
-            _brake.set_smooth_values(int(utilLib.get_value(split_smooth, '-', 1)))
-            _clutch.set_smooth_values(int(utilLib.get_value(split_smooth, '-', 2)))
+            usb_cdc.console.write(f"CALI:{calibration_values}\n".encode("utf-8"))
 
     def get_bits(self, msg):
+        """
+        Send the bit depths (raw and HID) of all pedals via serial in the format:
+        BITS:{raw_throttle}-{hid_throttle}-{raw_brake}-{hid_brake}-{raw_clutch}-{hid_clutch}.
+        """
         if "GetBits" in msg:
-            bits_values = (
-                f"BITS:{self._throttle_raw_bit}-{self._throttle_hid_bit}-"
-                f"{self._brake_raw_bit}-{self._brake_hid_bit}-"
-                f"{self._clutch_raw_bit}-{self._clutch_hid_bit}"
+            bits_values = "-".join(
+                [
+                    f"{self._pedals[name]['pedal']._raw_bit}-{self._pedals[name]['pedal']._hid_bit}"
+                    for name in self._pedals.keys()
+                ]
             )
-            usb_cdc.console.write(bits_values.encode('utf-8') + b'\n')
+            usb_cdc.console.write(f"BITS:{bits_values}\n".encode("utf-8"))
+
+    def update_inverted(self, msg):
+        """
+        Update the inversion settings of all pedals based on the serial command.
+        """
+        if "INVER:" in msg:
+            split_inverted = utilLib.get_value(msg, ',', 0).replace("INVER:", "").split("-")
+            for name, inverted in zip(self._pedals.keys(), split_inverted):
+                self._pedals[name].set_inverted_values(int(inverted))
 
 
-    def set_throttle_on(self, on):
-        self._throttle_on = on
-        utilLib.write_to_storage("throttle_on", on)
+    def update_smooth(self, msg):
+        """
+        Update the smoothing settings of all pedals based on the serial command.
+        """
+        if "SMOOTH:" in msg:
+            split_smooth = utilLib.get_value(msg, ',', 0).replace("SMOOTH:", "").split("-")
+            for name, smooth in zip(self._pedals.keys(), split_smooth):
+                self._pedals[name].set_smooth_values(int(smooth))
 
-    def set_throttle_bits(self, rawBit, hidBit):
-        self._throttle_raw_bit = self.get_bit(rawBit)
-        self._throttle_hid_bit = self.get_bit(hidBit)
-        utilLib.write_to_storage("throttle_bits", {"raw": rawBit, "hid": hidBit})
 
-    def set_throttle_analog_pin(self, analogInput):
-        self._throttle_pedalType = "Analog"
-        self._throttle_analog_input = analogInput
-        _throttle.config_analog(analogInput)
-        utilLib.write_to_storage("throttle_input", {"type": "Analog", "pin": str(analogInput)})
 
-    def set_brake_on(self, on):
-        self._brake_on = on
-        utilLib.write_to_storage("brake_on", on)
 
-    def set_brake_bits(self, rawBit, hidBit):
-        self._brake_raw_bit = self.get_bit(rawBit)
-        self._brake_hid_bit = self.get_bit(hidBit)
-        utilLib.write_to_storage("brake_bits", {"raw": rawBit, "hid": hidBit})
 
-    def set_brake_loadcell(self, DOUT, CLK):
-        self._brake_pedalType = "Loadcell"
-        _brake.config_load_cell(DOUT, CLK)
-        utilLib.write_to_storage("brake_input", {"type": "Loadcell", "pins": {"DOUT": DOUT, "CLK": CLK}})
 
-    def set_clutch_on(self, on):
-        self._clutch_on = on
-        utilLib.write_to_storage("clutch_on", on)
+    ### Generic Getter and Setter Methods ###
+    def set_pedal_on(self, pedal_name, on):
+        """
+        Set the on/off state for a pedal.
+        """
+        self._on_states[pedal_name] = on
+        utilLib.write_to_settings(f"{pedal_name}.on", on)
 
-    def set_clutch_bits(self, rawBit, hidBit):
-        self._clutch_raw_bit = self.get_bit(rawBit)
-        self._clutch_hid_bit = self.get_bit(hidBit)
-        utilLib.write_to_storage("clutch_bits", {"raw": rawBit, "hid": hidBit})
+    def get_pedal_on(self, pedal_name):
+        """
+        Retrieve the on/off state for a pedal.
+        """
+        return utilLib.read_from_settings(f"{pedal_name}.on") or False
 
-    def set_clutch_analog_pin(self, analogInput):
-        self._clutch_pedalType = "Analog"
-        self._clutch_analog_input = analogInput
-        _clutch.config_analog(analogInput)
-        utilLib.write_to_storage("clutch_input", {"type": "Analog", "pin": str(analogInput)})
+    def set_pedal_bits(self, pedal_name):
+        """
+        Set the raw and HID bit depths for a pedal using values from settings.
+        """
+        pedal = self._pedals[pedal_name]
+        bits = utilLib.read_from_settings(pedal_name).get("bits", {})
+        raw_bit = get_bit_depth(bits.get("raw", "16bit"))
+        hid_bit = get_bit_depth(bits.get("hid", "16bit"))
+        pedal.set_bits(raw_bit, hid_bit)
+        utilLib.write_to_settings(f"{pedal_name}.bits", {"raw": raw_bit, "hid": hid_bit})
+
+    def get_pedal_bits(self, pedal_name):
+        """
+        Retrieve the raw and HID bit depths for a pedal.
+        """
+        bits = utilLib.read_from_settings(pedal_name).get("bits", {})
+        raw_bit = get_bit_depth(bits.get("raw", "16bit"))
+        hid_bit = get_bit_depth(bits.get("hid", "16bit"))
+        return raw_bit, hid_bit
+
+    def set_pedal_input(self, pedal_name, input_type, **kwargs):
+        """
+        Set the input configuration for a pedal.
+        :param pedal_name: The pedal name (e.g., "throttle").
+        :param input_type: The type of input (e.g., "Analog", "Loadcell").
+        :param kwargs: Additional configuration details (e.g., pin or DOUT/CLK pins).
+        """
+        pedal = self._pedals[pedal_name]
+        if input_type == "Analog":
+            pedal.config_analog(kwargs.get("pin"))
+            utilLib.write_to_settings(f"{pedal_name}.input", {"type": "Analog", "pin": kwargs["pin"]})
+        elif input_type == "Loadcell":
+            pedal.config_load_cell(kwargs["DOUT"], kwargs["CLK"])
+            utilLib.write_to_settings(f"{pedal_name}.input", {"type": "Loadcell", "pins": {"DOUT": kwargs["DOUT"], "CLK": kwargs["CLK"]}})
+
+    def get_pedal_input(self, pedal_name):
+        """
+        Retrieve the input configuration for a pedal.
+        """
+        return utilLib.read_from_settings(f"{pedal_name}.input")
+
+    ### Configuration Loading ###
+    def load_settings(self):
+        """
+        Load all settings from storage. If the device has not been initialized, reset all settings to defaults.
+        """
+        initialized = utilLib.read_from_settings(E_INIT)
+        if initialized:
+            for name in self._pedals.keys():
+                self.set_pedal_on(name, self.get_pedal_on(name))
+                self.set_pedal_bits(name)
+                input_config = self.get_pedal_input(name)
+                if input_config:
+                    if input_config["type"] == "Analog":
+                        self.set_pedal_input(name, "Analog", pin=input_config["pin"])
+                    elif input_config["type"] == "Loadcell":
+                        pins = input_config["pins"]
+                        self.set_pedal_input(name, "Loadcell", DOUT=pins["DOUT"], CLK=pins["CLK"])
+            # Apply global inversion and smoothing settings
+            self.update_inverted(f"INVER:{utilLib.read_from_settings(E_PEDAL_INVERTED_MAP)}")
+            self.update_smooth(f"SMOOTH:{utilLib.read_from_settings(E_PEDAL_SMOOTH_MAP)}")
+
+            # Validate pinout configuration
+            settings = utilLib.read_from_settings()
+            if settings:
+                check_pinout(settings)
+            else:
+                print("Warning: No settings available to validate pinout.")
+        else:
+            self.reset_device_settings()
+
+    ### Device Reset ###
+    def reset_device_settings(self):
+        """
+        Reset all pedal-related settings to defaults and reboot the device.
+        """
+        utilLib.write_to_storage(E_INIT, True)
+        for name in self._pedals.keys():
+            pedal = self._pedals[name]
+            pedal.reset_output_map_values(f"{name}_output_map")
+            pedal.reset_calibration_values(f"{name}_calibration")
+        utilLib.write_to_settings(E_PEDAL_INVERTED_MAP, "0-0-0")
+        utilLib.write_to_settings(E_PEDAL_SMOOTH_MAP, "1-1-1")
+        print("Resetting device...")
+        time.sleep(1)
+        microcontroller.reset()
