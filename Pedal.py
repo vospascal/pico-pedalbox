@@ -1,7 +1,7 @@
 from storage import Storage
 from Filters import Biquad, BiquadType
 from adafruit_ads1x15.ads1115 import ADS1115
-from adafruit_hid.gamepad import Gamepad
+from simple import Gamepad # custom gamepad descriptor
 from adafruit_hx711.hx711 import HX711
 from adafruit_hx711.analog_in import AnalogIn
 
