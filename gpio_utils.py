@@ -4,8 +4,8 @@ import board
 
 # Define a static map for GPIO pins with descriptions
 GPIO_MAP = {
-    0: {"board_pin": board.GP0, "description": "General Purpose"},
-    1: {"board_pin": board.GP1, "description": "General Purpose"},
+    0: {"board_pin": board.GP0, "description": "sda default"},
+    1: {"board_pin": board.GP1, "description": "scl default"},
     2: {"board_pin": board.GP2, "description": "General Purpose"},
     3: {"board_pin": board.GP3, "description": "General Purpose"},
     4: {"board_pin": board.GP4, "description": "General Purpose"},
@@ -34,6 +34,14 @@ GPIO_MAP = {
     27: {"board_pin": board.GP27, "description": "General Purpose"},
     28: {"board_pin": board.GP28, "description": "General Purpose"},
 }
+
+# GPIO Assignments for I2C:
+# I2C0
+# SDA: GP0, GP4, GP8, GP12, GP16, GP20
+# SCL: GP1, GP5, GP9, GP13, GP17, GP21
+# I2C1
+# SDA: GP2, GP6, GP10, GP14, GP18, GP26
+# SCL: GP3, GP7, GP11, GP15, GP19, GP27
 
 def check_pinout(settings):
     for pedal, config in settings.items():

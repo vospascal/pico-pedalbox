@@ -1,16 +1,15 @@
 from simple.boot import gamepad_descriptor
 import usb_hid
 import supervisor
-import storage
-import board, digitalio
+# import storage
+# import board, digitalio
 
+# button = digitalio.DigitalInOut(board.GP12)
+# button.pull = digitalio.Pull.UP
 
-button = digitalio.DigitalInOut(board.GP12)
-button.pull = digitalio.Pull.UP
-
-# Disable devices only if button is not pressed.
-if button.value:
-   storage.disable_usb_drive()
+# # Disable devices only if button is not pressed.
+# if button.value:
+#    storage.disable_usb_drive()
 
 # pid 0x5050 = "BMW DTM M4"
 # pid 0x5051 = "AUDI RS5 DTM"

@@ -1,3 +1,4 @@
+import time
 from UtilLibrary import UtilLib
 import microcontroller
 from Pedal import Pedal
@@ -5,13 +6,9 @@ from adafruit_ads1x15.ads1115 import ADS1115
 from simple import Gamepad
 from bit_utils import get_bit_depth
 import usb_cdc
-import board
-import busio
 from gpio_utils import check_pinout
+import usb_hid
 
-# Initialize I2C and Gamepad
-i2c = busio.I2C(board.SCL, board.SDA)
-gamepad = Gamepad()
 utilLib = UtilLib()
 
 # Constants
@@ -19,18 +16,21 @@ E_INIT = "init_flag"
 E_PEDAL_INVERTED_MAP = "pedal_inverted_map"
 E_PEDAL_SMOOTH_MAP = "pedal_smooth_map"
 
-# Create the pedals
-_throttle = Pedal("T:", i2c, gamepad)
-_brake = Pedal("B:", i2c, gamepad)
-_clutch = Pedal("C:", i2c, gamepad)
-
 
 class Pedals:
-    def __init__(self):
+    def __init__(self, i2c):
+        self.i2c = i2c
+        self.gamepad = Gamepad(usb_hid.devices)
+
+        # Create the pedals
+        self._throttle = Pedal("T:", self.i2c, self.gamepad)
+        self._brake = Pedal("B:", self.i2c, self.gamepad)
+        self._clutch = Pedal("C:", self.i2c, self.gamepad)
+
         self._pedals = {
-            "throttle": {"pedal": _throttle, "prefix": "T"},
-            "brake": {"pedal": _brake, "prefix": "B"},
-            "clutch": {"pedal": _clutch, "prefix": "C"},
+            "throttle": {"pedal": self._throttle, "prefix": "T"},
+            "brake": {"pedal": self._brake, "prefix": "B"},
+            "clutch": {"pedal": self._clutch, "prefix": "C"},
         }
         self._on_states = {"throttle": False, "brake": False, "clutch": False}
 
@@ -38,10 +38,11 @@ class Pedals:
         """
         Initialize the pedals, load settings, and configure ADS1115.
         """
+        print("Setting up pedals...")
         self.load_settings()
 
         # Configure the ADS1115
-        _ads1015 = ADS1115(i2c)
+        _ads1015 = ADS1115(self.i2c)
         _ads1015.gain = 0  # 6.144 volts
         _ads1015.mode = 0  # Continuous mode
         _ads1015.data_rate = 7  # Fast data rate
@@ -50,27 +51,32 @@ class Pedals:
         """
         Main loop to handle serial commands and update pedals.
         """
-        if usb_cdc.console.in_waiting > 0:
-            try:
-                msg = usb_cdc.console.readline().decode("utf-8").strip()
-                self.process_serial_command(msg)
-            except UnicodeDecodeError as e:
-                print(f"Error decoding serial data: {e}")
+        try:
+            print("Checking serial input...")
+            if usb_cdc.console.in_waiting > 0:
+                try:
+                    msg = usb_cdc.console.readline().decode("utf-8").strip()
+                    self.process_serial_command(msg)
+                except UnicodeDecodeError as e:
+                    print(f"Error decoding serial data: {e}")
 
-        serial_string = ""
-        for name, pedal in self._pedals.items():
-            if self._on_states[name]:
-                pedal.read_values()
-                axis = {"throttle": "x", "brake": "y", "clutch": "z"}[name]
-                gamepad.move_joystick(**{axis: pedal.get_after_hid()})
-                serial_string += pedal.get_pedal_string()
+            serial_string = ""
+            for name, pedal in self._pedals.items():
+                if self._on_states[name]:
+                    pedal.read_values()
+                    axis = {"throttle": "x", "brake": "y", "clutch": "z"}[name]
+                    self._gamepad.move_joystick(**{axis: pedal.get_after_hid()})
+                    serial_string += pedal.get_pedal_string()
 
-        # Send HID state to the PC
-        gamepad.send_report()
+            # Send HID state to the PC
+            self._gamepad.send_report()
 
-        if usb_cdc.console.out_waiting == 0:
-            usb_cdc.console.write(serial_string.encode("utf-8") + b"\n")
+            if usb_cdc.console.out_waiting == 0:
+                usb_cdc.console.write(serial_string.encode("utf-8") + b"\n")
 
+                
+        except Exception as e:
+            print(f"Unhandled exception in loop: {e}")
 
     ### Serial Command Processing ###
     def process_serial_command(self, msg):
@@ -84,6 +90,7 @@ class Pedals:
             self.reset_device_settings()
 
         # Handle specific commands
+        print(f"Processing message: {msg}")
         self.handle_command(msg, "GetUsage", self.get_usage)
         self.handle_command(msg, "GetMap", self.get_map)
         self.handle_command(msg, "GetInverted", self.get_inverted)
@@ -117,13 +124,21 @@ class Pedals:
         Send the output map of all pedals via serial using their prefixes.
         """
         if "GetMap" in msg:
-            map_values = ",".join(
-                [
-                    f"{pedal['prefix']}MAP:{','.join(map(str, pedal['pedal'].get_output_map_values('', f'{name}_output_map')))}"
-                    for name, pedal in self._pedals.items()
-                ]
-            )
-            usb_cdc.console.write(f"MAP:{map_values}\n".encode("utf-8"))
+            print("Processing GetMap command")  # Debug line
+            try:
+                map_entries = []
+                for name, pedal in self._pedals.items():
+                    prefix = pedal["prefix"]
+                    output_map = pedal["pedal"].get_output_map_values("", f"{name}_output_map")
+                    map_entry = f"{prefix}MAP:{','.join(map(str, output_map))}"
+                    map_entries.append(map_entry)
+
+                map_values = ",".join(map_entries)
+                print(f"Generated map values: {map_values}")  # Debug line
+                usb_cdc.console.write(f"MAP:{map_values}\n".encode("utf-8"))
+            except Exception as e:
+                print(f"Error in get_map: {e}")  # Debug line
+
 
 
 
@@ -132,20 +147,36 @@ class Pedals:
         Send the inversion status of all pedals via serial in the format INVER:1-1-1.
         """
         if "GetInverted" in msg:
-            inverted_values = "-".join(
-                [str(int(pedal["pedal"].get_inverted_values())) for pedal in self._pedals.values()]
-            )
-            usb_cdc.console.write(f"INVER:{inverted_values}\n".encode("utf-8"))
+            print("Processing GetInverted command")  # Debug line
+            try:
+                inverted_values = []
+                for pedal in self._pedals.values():
+                    inverted_values.append(str(int(pedal["pedal"].get_inverted_values())))
+                
+                result = "-".join(inverted_values)
+                print(f"Inverted values: {result}")  # Debug line
+                usb_cdc.console.write(f"INVER:{result}\n".encode("utf-8"))
+            except Exception as e:
+                print(f"Error in get_inverted: {e}")  # Debug line
+
 
     def get_smooth(self, msg):
         """
         Send the smoothing status of all pedals via serial in the format SMOOTH:1-1-1.
         """
         if "GetSmooth" in msg:
-            smooth_values = "-".join(
-                [str(int(pedal["pedal"].get_smooth_values())) for pedal in self._pedals.values()]
-            )
-            usb_cdc.console.write(f"SMOOTH:{smooth_values}\n".encode("utf-8"))
+            print("Processing GetSmooth command")  # Debug line
+            try:
+                smooth_values = []
+                for pedal in self._pedals.values():
+                    smooth_values.append(str(int(pedal["pedal"].get_smooth_values())))
+                
+                result = "-".join(smooth_values)
+                print(f"Smoothing values: {result}")  # Debug line
+                usb_cdc.console.write(f"SMOOTH:{result}\n".encode("utf-8"))
+            except Exception as e:
+                print(f"Error in get_smooth: {e}")  # Debug line
+
 
 
     def get_calibration(self, msg):
@@ -153,36 +184,55 @@ class Pedals:
         Send the calibration values of all pedals via serial using their prefixes.
         """
         if "GetCali" in msg:
-            calibration_values = ",".join(
-                [
-                    f"{pedal['prefix']}CALI:{','.join(map(str, pedal['pedal'].get_calibration_values(f'{pedal['prefix']}CALI:')))}"
-                    for name, pedal in self._pedals.items()
-                ]
-            )
-            usb_cdc.console.write(f"CALI:{calibration_values}\n".encode("utf-8"))
+            print("Processing GetCali command")  # Debug line
+            try:
+                calibration_entries = []
+                for name, pedal in self._pedals.items():
+                    prefix = pedal["prefix"]
+                    calibration_values = pedal["pedal"].get_calibration_values(f"{prefix}CALI:")
+                    calibration_entry = f"{prefix}CALI:{','.join(map(str, calibration_values))}"
+                    calibration_entries.append(calibration_entry)
+
+                result = ",".join(calibration_entries)
+                print(f"Calibration values: {result}")  # Debug line
+                usb_cdc.console.write(f"CALI:{result}\n".encode("utf-8"))
+            except Exception as e:
+                print(f"Error in get_calibration: {e}")  # Debug line
+
 
     def get_bits(self, msg):
         """
-        Send the bit depths (raw and HID) of all pedals via serial in the format:
-        BITS:{raw_throttle}-{hid_throttle}-{raw_brake}-{hid_brake}-{raw_clutch}-{hid_clutch}.
+        Send the bit depths (raw and HID) of all pedals via serial.
         """
         if "GetBits" in msg:
-            bits_values = "-".join(
-                [
-                    f"{self._pedals[name]['pedal']._raw_bit}-{self._pedals[name]['pedal']._hid_bit}"
-                    for name in self._pedals.keys()
-                ]
-            )
-            usb_cdc.console.write(f"BITS:{bits_values}\n".encode("utf-8"))
+            print("Processing GetBits command")  # Debug line
+            try:
+                bits_values = []
+                for name in self._pedals.keys():
+                    raw_bit = self._pedals[name]["pedal"]._raw_bit
+                    hid_bit = self._pedals[name]["pedal"]._hid_bit
+                    bits_values.append(f"{raw_bit}-{hid_bit}")
+
+                result = "-".join(bits_values)
+                print(f"Bit values: {result}")  # Debug line
+                usb_cdc.console.write(f"BITS:{result}\n".encode("utf-8"))
+            except Exception as e:
+                print(f"Error in get_bits: {e}")  # Debug line
+
 
     def update_inverted(self, msg):
         """
         Update the inversion settings of all pedals based on the serial command.
         """
         if "INVER:" in msg:
-            split_inverted = utilLib.get_value(msg, ',', 0).replace("INVER:", "").split("-")
-            for name, inverted in zip(self._pedals.keys(), split_inverted):
-                self._pedals[name].set_inverted_values(int(inverted))
+            print(f"Processing INVER command: {msg}")  # Debug line
+            try:
+                split_inverted = utilLib.get_value(msg, ',', 0).replace("INVER:", "").split("-")
+                for name, inverted in zip(self._pedals.keys(), split_inverted):
+                    self._pedals[name]["pedal"].set_inverted_values(int(inverted))
+                print(f"Updated inverted values: {split_inverted}")  # Debug line
+            except Exception as e:
+                print(f"Error in update_inverted: {e}")  # Debug line
 
 
     def update_smooth(self, msg):
@@ -190,13 +240,14 @@ class Pedals:
         Update the smoothing settings of all pedals based on the serial command.
         """
         if "SMOOTH:" in msg:
-            split_smooth = utilLib.get_value(msg, ',', 0).replace("SMOOTH:", "").split("-")
-            for name, smooth in zip(self._pedals.keys(), split_smooth):
-                self._pedals[name].set_smooth_values(int(smooth))
-
-
-
-
+            print(f"Processing SMOOTH command: {msg}")  # Debug line
+            try:
+                split_smooth = utilLib.get_value(msg, ',', 0).replace("SMOOTH:", "").split("-")
+                for name, smooth in zip(self._pedals.keys(), split_smooth):
+                    self._pedals[name]["pedal"].set_smooth_values(int(smooth))
+                print(f"Updated smoothing values: {split_smooth}")  # Debug line
+            except Exception as e:
+                print(f"Error in update_smooth: {e}")  # Debug line
 
 
     ### Generic Getter and Setter Methods ###

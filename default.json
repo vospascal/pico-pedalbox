@@ -1,5 +1,10 @@
 {
   "init_flag": true,
+  "i2c_config": {
+    "controller": "I2C0",
+    "sda": "GP0",
+    "scl": "GP1"
+  },
   "throttle": {
     "on": true,
     "type": "Analog",

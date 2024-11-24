@@ -1,6 +1,3 @@
-import os
-import json
-
 class UtilLib:
     def array_map_multiplier(self, arr, multiplier):
         """
