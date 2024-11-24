@@ -1,5 +1,6 @@
 from simple.boot import gamepad_descriptor
 import usb_hid
+import usb_cdc
 import supervisor
 # import storage
 # import board, digitalio
@@ -28,16 +29,7 @@ MANUFACTURER_NAME = "Custom Sim Hardware"
 supervisor.set_usb_identification(vid=CUSTOM_VID, pid=CUSTOM_PID, manufacturer=MANUFACTURER_NAME, product=PRODUCT_NAME)
 
 
-# Enable HID devices including the custom gamepad descriptor
-usb_hid.enable(
-    (usb_hid.Device.KEYBOARD,
-     usb_hid.Device.MOUSE,
-     usb_hid.Device.CONSUMER_CONTROL,
-     gamepad_descriptor)
-)
-
 # Set interface name for the gamepad
+usb_hid.enable(gamepad_descriptor, boot_device=1)
 usb_hid.set_interface_name("PedalBox")
-
-# Only use the gamepad
-usb_hid.enable((gamepad_descriptor,))
+usb_cdc.enable(console=True, data=True)

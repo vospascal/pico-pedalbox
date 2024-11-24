@@ -9,19 +9,12 @@
 * Author(s): Dan Halbert
 """
 
-import struct
 import time
 
 from adafruit_hid import find_device
-
 class Gamepad:
     def __init__(self, devices):
-        """Create a Gamepad object that will send USB gamepad HID reports.
-
-        Devices can be a list of devices that includes a gamepad device or a gamepad device
-        itself. A device is any object that implements ``send_report()``, ``usage_page`` and
-        ``usage``.
-        """
+        """Create a Gamepad object that will send USB gamepad HID reports."""
         self._gamepad_device = find_device(devices, usage_page=0x1, usage=0x05)
 
         # Reuse this bytearray to send gamepad reports.
@@ -31,8 +24,7 @@ class Gamepad:
         #   Byte 2: RZ
         self._report = bytearray(3)
 
-        # Remember the last report as well, so we can avoid sending
-        # duplicate reports.
+        # Remember the last report as well, so we can avoid sending duplicate reports.
         self._last_report = bytearray(3)
 
         # Store axis states separately for easier manipulation.
@@ -56,25 +48,37 @@ class Gamepad:
         self._send()
 
     def reset_all(self):
-        """Reset all axes to 0."""
         self._rx = 0
         self._ry = 0
         self._rz = 0
+        time.sleep(0.05)  # Short delay to prevent USB busy state
         self._send(always=True)
 
     def _send(self, always=False):
-        # Pack RX, RY, RZ axes
+        # Pack RX, RY, RZ axes into the HID report
         self._report[0] = self._rx
         self._report[1] = self._ry
         self._report[2] = self._rz
 
         # Debug print to verify the report content
-        print(f"Report: {self._report.hex()}")
+        print(f"Sending HID report: {self._report.hex()}")
 
-        # Only send the report if it's different from the last one, unless `always` is True
-        if always or self._last_report != self._report:
-            self._gamepad_device.send_report(self._report)
-            self._last_report[:] = self._report
+        # Retry logic for USB busy state
+        retry_count = 3
+        for attempt in range(retry_count):
+            try:
+                # Only send the report if it has changed, unless `always` is True
+                if always or self._last_report != self._report:
+                    self._gamepad_device.send_report(self._report)
+                    self._last_report[:] = self._report
+                break
+            except OSError as e:
+                if attempt < retry_count - 1:
+                    print(f"USB busy, retrying... (attempt {attempt + 1})")
+                    time.sleep(0.05)  # Short delay before retrying
+                else:
+                    print("USB busy error, retries exhausted.")
+                    raise e
 
     @staticmethod
     def _validate_axis_value(value):

@@ -48,35 +48,44 @@ class Pedals:
         _ads1015.data_rate = 7  # Fast data rate
 
     def loop(self):
-        """
-        Main loop to handle serial commands and update pedals.
-        """
         try:
-            print("Checking serial input...")
-            if usb_cdc.console.in_waiting > 0:
-                try:
-                    msg = usb_cdc.console.readline().decode("utf-8").strip()
-                    self.process_serial_command(msg)
-                except UnicodeDecodeError as e:
-                    print(f"Error decoding serial data: {e}")
-
+            rx, ry, rz = 0, 0, 0
             serial_string = ""
-            for name, pedal in self._pedals.items():
-                if self._on_states[name]:
-                    pedal.read_values()
-                    axis = {"throttle": "x", "brake": "y", "clutch": "z"}[name]
-                    self._gamepad.move_joystick(**{axis: pedal.get_after_hid()})
-                    serial_string += pedal.get_pedal_string()
 
-            # Send HID state to the PC
-            self._gamepad.send_report()
+            # Process throttle pedal
+            if self._on_states["throttle"]:
+                self._throttle.read_values()
+                new_rx = self._throttle.get_after_hid()
+                if new_rx != rx:  # Only update if value has changed
+                    rx = new_rx
+                serial_string += self._throttle.get_pedal_string()
 
+            # Process brake pedal
+            if self._on_states["brake"]:
+                self._brake.read_values()
+                new_ry = self._brake.get_after_hid()
+                if new_ry != ry:  # Only update if value has changed
+                    ry = new_ry
+                serial_string += self._brake.get_pedal_string()
+
+            # Process clutch pedal
+            if self._on_states["clutch"]:
+                self._clutch.read_values()
+                new_rz = self._clutch.get_after_hid()
+                if new_rz != rz:  # Only update if value has changed
+                    rz = new_rz
+                serial_string += self._clutch.get_pedal_string()
+
+            # Send HID report if any value has changed
+            self.gamepad.set_axes(rx=rx, ry=ry, rz=rz)
+
+            # Send serial output if available
             if usb_cdc.console.out_waiting == 0:
                 usb_cdc.console.write(serial_string.encode("utf-8") + b"\n")
-
-                
         except Exception as e:
             print(f"Unhandled exception in loop: {e}")
+
+
 
     ### Serial Command Processing ###
     def process_serial_command(self, msg):
